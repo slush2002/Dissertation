@@ -1,0 +1,383 @@
+##PBMC 3k Guided Tutorial
+
+
+##Datasets were converted from .tar files to .rds to be read in R
+##The data was downloaded from 
+##Involved combining multiple .rds files to one .rds file to conduct a meta-anlysis
+#Involved using the loop function in R
+
+#1.1 - Setting up the Seurat Object
+##Loading necessary libraries within Rstudio
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(ggrepel)
+
+#Load PBMC meta-analysis data
+dataset= readRDS ("/lyceum/sl21n22/Seurat_data/combined_seurat_241524.rds")
+#Checking the structure of the dataset
+dataset
+##23027 features across 134835 samples within 1 assay
+##Active assay: RNA (23027 features, 0 variable features)
+##2 layers present: counts, data
+
+#1.2 - Pre_Processing Workflow
+dataset[["percent.mt"]] <- PercentageFeatureSet(dataset, pattern = "^MT-")
+##Adding a new column called "percent.mt" to the dataset which shows the mitochondrial
+##percentage of each cell and uses QC methods to  determine whether cells are overly stressed or not
+
+
+##Visualising a Violin Plot of the Data
+png("VlnPlot.png")
+VlnPlot(dataset, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dev.off()
+
+##Visualising a Feature Scatter Plot of the Data
+png("FeatureScatter.png")
+plot1 <- FeatureScatter(dataset, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(dataset, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+dev.off()
+
+dataset <- subset(dataset, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5
+##-	Filtering to only include cells with unique RNA features that are greater than 200 but less
+## than 2500
+## -	Filtering to exclude cells greater than 5% due to the likelihood that they are a doublet
+## (multiple cells occurring in one cell) and will reduce the accuracy of the findings
+
+
+#1.3 - Normalizing Data
+dataset <- NormalizeData(dataset, normalization.method = "LogNormalize", scale.factor = 10000)
+dataset <- NormalizeData(dataset)
+
+#1.4 - Identifying Highly Variable Genes
+dataset <- FindVariableFeatures(dataset, selection.method = "vst", nfeatures = 2000)
+dataset
+top10 <- head(VariableFeatures(dataset), 10)
+top10
+
+#Plotting Variable Feature Plots
+png("VariableFeaturePlot.png")
+plot1 <- VariableFeaturePlot(dataset)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+dev.off()
+
+plot1 <- VariableFeaturePlot(dataset)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+ggsave("VariableFeaturePlot.png", plot = plot2)
+
+##1.5 - Scaling Data
+#all.genes <- rownames(dataset)
+#dataset <- ScaleData(dataset, features = all.genes)
+#dataset
+
+##1.6 - Running PCA & Performing Limited Dimensionality Reduction
+dataset <- RunPCA(dataset, features = VariableFeatures(object = dataset))
+print(dataset[["pca"]], dims = 1:5, nfeatures = 5)
+
+#Plotting VizDim Plot
+png("VizDimPlot.png")
+VizDimLoadings(dataset, dims = 1:2, reduction = "pca")
+dev.off()
+
+#Plotting DimPlot
+png("DimPlot.png")
+DimPlot(dataset, reduction = "pca")
+dev.off()
+
+#Plotting DimHeatmap
+png("DimHeatmap.png")
+DimHeatmap(dataset, dims = 1, cells = 500, balanced = TRUE)
+dev.off()
+
+Plotting Multiple HeatMaps
+png("MultipleHeatMaps.png")
+MultiHeatmap(dataset, dims = 1:15, cells = 500, balanced = TRUE)
+dev.off()
+
+png("MultipleHeatMaps2.png")
+MultiHeatmap(dataset, dims = 1:21, cells = 500, balanced = TRUE)
+dev.off()
+
+##1.7 - Determining the dimensionality of the plot
+png("ElbowPlot.png")
+ElbowPlot(dataset)
+dev.off()
+
+##1.8 - Clustering the Cells
+dataset <- FindNeighbors(dataset, dims = 1:10)
+dataset <- FindClusters(dataset, resolution = 0.5)
+head(Idents(dataset), 5)
+
+##1.9 - Running Non-linear Dimensionality Reduction -   UMAP
+dataset <- RunUMAP(dataset, dims = 1:10)
+png("UMAPPlot.png")
+DimPlot(dataset, reduction = "umap")
+dev.off()
+
+##2. Identifying Samples & Adding MetaData columns
+
+##2.1 - Adding MetaData to identify which samples are Healthy and which have MF
+dataset@meta.data <- dataset@meta.data %>%
+  mutate(condition = case_when(
+    sample %in% c("Sample01", "Sample06", "Sample09", "Sample13", "Sample17", "Sample18") ~ "Healthy",
+    sample %in% c("Sample02", "Sample03", "Sample04", "Sample05", "Sample07", "Sample08",
+                  "Sample10", "Sample11", "Sample12", "Sample14", "Sample15", "Sample16",
+                  "Sample19", "Sample20", "Sample21") ~ "MF",
+    TRUE ~ "Unknown"  
+  ))
+
+##2.2 - Adding MetaData to identify which samples are Male and which are Female
+dataset@meta.data <- dataset@meta.data %>%
+  mutate(Sex = case_when(
+    orig.ident %in% c("Sample21", "Sample20", "Sample02", "Sample04", "Sample07", "Sample08", "Sample10", "Sample11", "Sample12", "Sample14", "Sample17", "Sample06", "Sample13") ~ "M",
+    orig.ident %in% c("Sample19", "Sample18", "Sample03", "Sample05", "Sample09", "Sample16", "Sample15", "Sample01") ~ "F",
+    TRUE ~ "Unknown"  
+  ))
+
+##Creating a .csv file for the MetaData
+meta_data <- as.data.frame(dataset@meta.data)
+write.csv(meta_data, "metadata.csv", row.names = TRUE)
+
+##2.3 - Identifying Male and Females who have MF and conducting a Differential Gene Expression (DGE)
+subset_seurat <- subset(dataset, subset = condition == "MF")
+dataset$Sex <- factor(dataset$Sex, levels = c("F","M"))
+sexmarkers <- FindMarkers(subset_seurat, ident.1 = "F", ident.2 = "M", group.by = "Sex")
+write.csv(sexmarkers, file = "sexmarkers.csv")
+##FindMarkers has a filter and therefore some of the results may be excluded to only include 
+##significant results.
+##Females are compared against males
+
+##2.4 - DGE for Females who are Healthy controls vs MF
+subset_seurat <- subset(dataset, subset = Sex == "F")
+dataset$condition <- factor(dataset$condition, levels = c("Healthy","MF"))
+femalemarkers <- FindMarkers(subset_seurat, ident.1 = "MF", ident.2 = "Healthy", group.by = "condition")
+write.csv(femalemarkers, file = "femalemarkers.csv")
+
+##2.5 - DGE for Males who are Healthy controls vs MF
+subset_seurat <- subset(dataset, subset = Sex == "M")
+dataset$condition <- factor(dataset$condition, levels = c("Healthy","MF"))
+malemarkers <- FindMarkers(subset_seurat, ident.1 = "MF", ident.2 = "Healthy", group.by = "condition")
+write.csv(malemarkers, file = "malemarkers.csv")
+
+##2.6 - Comparing Healthy Male and Female Samples
+subset_seurat <- subset(dataset, subset = condition == "Healthy")
+dataset$Sex <- factor(dataset$Sex, levels = c("F","M"))
+healthymarkers <- FindMarkers(subset_seurat, ident.1 = "F", ident.2 = "M", group.by = "Sex")
+write.csv(healthymarkers, file = "AllHealthy2.csv")
+##This isn't used in our findings however it allows for the comparison of all 4 groups
+
+##3.0 - Identifying Escape Genes within our Data
+grep escape Comparitive_Data/All-MF.csv
+
+##4.0 Plotting of Data
+##Creating 3 Volcano plots allowing for the comparison of different groups. Identifying genes found
+##on the X chromosome
+
+##Setting Suitable Threshold values
+p_threshold <- 0.05  
+fc_threshold <- 1 
+
+##Plot 1
+ FemaleData <- "lyceum/sl21n22/Comparitive_Data/Female-HealthyvsMF.csv"
+  FemaleData <- read.delim("Comparitive_Data/Female-HealthyvsMF.csv", header = TRUE, sep="\t")
+  FemaleData$neg_log10_p <- -log10(FemaleData$p_value)
+  FemaleEscape <- subset(FemaleData, chr == "chrX")
+
+ AllFemaleEscapeData <- ggplot(FemaleData, aes(x = log_fc, y = neg_log10_p)) +
+  # Plot all points in gray
+  geom_point(color = "gray", alpha = 0.3, size = 3) +
+
+  # Highlight chrX classified genes in color
+  geom_point(
+    data = subset(FemaleData, chr == "chrX" & classification %in% c("X-nonPAR", "X-PAR")),
+    aes(color = classification),
+    alpha = 0.9,
+    size = 3.5
+  ) +
+
+  # Add gene labels in black for significant chrX genes
+  geom_text_repel(
+    data = subset(FemaleData, chr == "chrX"),
+    aes(label = gene_name),
+    color = "black",
+    size = 7,
+    max.overlaps = 50
+  ) +
+
+  # Manual color scale for classifications
+  scale_color_manual(values = c(
+    "X-nonPAR" = "blue",
+    "X-PAR" = "green"
+  )) +
+
+  # Set axis limits
+  coord_cartesian(xlim = c(-0.80, 1.1), ylim = c(20, 250)) +
+
+
+
+  # Annotate p-value threshold
+  annotate(
+    "text",
+    x = max(FemaleData$log_fc, na.rm = TRUE),
+    y = -log10(p_threshold) + 2,
+    label = paste0("p = ", p_threshold),
+    size = 5
+  ) +
+
+  # Title and axis labels
+  labs(
+    x = "Log2(Fold Change)",
+    y = "-Log10(Adjusted p-value)",
+    color = "Classification"
+  ) +
+
+  # Theme styling
+  theme_classic() +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.title = element_text(size = 22),
+    axis.text = element_text(size = 22),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16),
+    legend.position = "right")
+  
+
+  ggsave("FemaleNonPAREscape.png", plot = AllFemaleEscapeData, width = 12, height = 14, dpi = 300)
+
+##Plot 2
+##Plottting Male Data - Male Healthy vs MF
+MaleData <- "lyceum/sl21n22/Comparitive_Data/Female-HealthyvsMF.csv"
+  MaleData <- read.delim("Comparitive_Data/Female-HealthyvsMF.csv", header = TRUE, sep="\t")
+  MaleData$neg_log10_p <- -log10(MaleData$p_value)
+  AllMaleEscape <- subset(MaleData, chr == "chrX")
+
+
+AllMaleEscapeData <- ggplot(MaleData, aes(x = log_fc, y = neg_log10_p)) +
+  # Plot all points in gray
+  geom_point(color = "gray", alpha = 0.3, size = 3) +
+
+  # Highlight chrX classified genes in color
+  geom_point(
+    data = subset(MaleData, chr == "chrX" & classification %in% c("X-nonPAR", "X-PAR")),
+    aes(color = classification),
+    alpha = 0.9,
+    size = 3.5
+  ) +
+
+  # Add gene labels in black for significant chrX genes
+  geom_text_repel(
+    data = subset(MaleData, chr == "chrX"),
+    aes(label = gene_name),
+    color = "black",
+    size = 7,
+    max.overlaps = 50
+  ) +
+
+  # Manual color scale for classifications
+  scale_color_manual(values = c(
+    "X-nonPAR" = "blue",
+    "X-PAR" = "green"
+  )) +
+
+  # Set axis limits
+  coord_cartesian(xlim = c(-0.80, 1.1), ylim = c(20, 270)) +
+
+  # Annotate p-value threshold
+  annotate(
+    "text",
+    x = max(MaleData$log_fc, na.rm = TRUE),
+    y = -log10(p_threshold) + 2,
+    label = paste0("p = ", p_threshold),
+    size = 5
+  ) +
+
+  # Title and axis labels
+  labs(
+    x = "Log2(Fold Change)",
+    y = "-Log10(Adjusted p-value)",
+    color = "Classification"
+  ) +
+
+  # Theme styling
+  theme_classic() +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.title = element_text(size = 22),
+    axis.text = element_text(size = 22),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16),
+    legend.position = "right")
+  
+
+  ggsave("MaleEscapeVolcano.png", plot = AllMaleEscapeData, width = 12, height = 14, dpi = 300)
+
+
+##4.1 Plot 1 - 
+MFData <- "lyceum/sl21n22/Comparitive_Data/All-MF.csv"
+MFDataMatrix <- read.delim("Comparitive_Data/All-MF.csv", header = TRUE, sep="\t")
+MFDataMatrix$neg_log10_p <- -log10(MFDataMatrix$p_value)
+MFEscape <- subset(MFDataMatrix, XCI_status == "escape")
+
+ EscapeData <- ggplot(MFDataMatrix, aes(x = log_fc, y = neg_log10_p)) +
+  # Plot all points in gray
+  geom_point(color = "gray", alpha = 0.3, size = 3) +
+
+  # Highlight chrX classified genes in color
+  geom_point(
+    data = subset(MFDataMatrix, XCI_status == "escape" & classification %in% c("X-nonPAR", "X-PAR")),
+    aes(color = classification),
+    alpha = 0.9,
+    size = 3.5
+  ) +
+
+  # Add gene labels in black for significant chrX genes
+  geom_text_repel(
+    data = subset(MFDataMatrix, XCI_status == "escape"),
+    aes(label = gene_name),
+    color = "black",
+    size = 7,
+    max.overlaps = 50
+  ) +
+
+  # Manual color scale for classifications
+  scale_color_manual(values = c(
+    "X-nonPAR" = "blue",
+    "X-PAR" = "green"
+  )) +
+
+  # Set axis limits
+  coord_cartesian(xlim = c(-0.80, 1.1), ylim = c(20, 140)) +
+
+
+
+  # Annotate p-value threshold
+  annotate(
+    "text",
+    x = max(MFDataMatrix$log_fc, na.rm = TRUE),
+    y = -log10(p_threshold) + 2,
+    label = paste0("p = ", p_threshold),
+    size = 5
+  ) +
+
+  # Title and axis labels
+  labs(
+    x = "Log2(Fold Change)",
+    y = "-Log10(Adjusted p-value)",
+    color = "Classification"
+  ) +
+
+  # Theme styling
+  theme_classic() +
+  theme(
+    axis.line = element_line(color = "black", size = 0.8),
+    axis.title = element_text(size = 22),
+    axis.text = element_text(size = 22),
+    legend.title = element_text(size = 18),
+    legend.text = element_text(size = 16),
+    legend.position = "right")
+  
+
+  ggsave("EscapeVolcano.png", plot = EscapeData, width = 12, height = 14, dpi = 300)
